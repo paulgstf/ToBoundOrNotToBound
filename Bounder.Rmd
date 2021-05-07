@@ -1,0 +1,337 @@
+---
+title: "To Bound or not to Bound : Technical Vignette"
+author: "Paul Gustafson"
+date: "5/7/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=F}
+set.seed(17)   ### make this whole vignette reproducible
+logit <- function(p) { log(p)-log(1-p)}
+expit <- function(z) {1/(1+exp(-z))}
+```
+
+```{r, echo=F}
+MYPLOT <- F     ### set to False for non-production plots embedded in report
+if (MYPLOT) {
+  source("C:/Users/paulg/ownCloud/OPUS2/Rcode/AuxFunctions.R")
+}
+```
+
+Set the thought-experiment world as we wish, by specified exposure prevalence in the control population, and specified exposure-disease odds ratio:
+
+```{r}
+trg.tr <- log(1.30)
+r.tr <- c(0.15, NA)
+r.tr[2] <- expit(logit(r.tr[1]) + trg.tr)
+r.tr
+```
+
+Study 2 involves differential misclassification, with the following true values, and (valid) prior lower bounds, for sensitivity and specificity:
+
+```{r}
+sn.tr <- c(.92, .99)
+sp.tr <- c(.99, .99)
+
+sn.lwr <- c(.90, .90)
+sp.lwr <- c(.95, .95)
+```
+
+As the sample size increases, Study 2 sees this apparent effect (log OR and OR) scales
+
+```{r}
+r.app.2 <- r.tr * sn.tr + (1-r.tr)*(1-sp.tr)
+trg.app.2 <- logit(r.app.2[2]) - logit(r.app.2[1])
+c(trg.app.2, exp(trg.app.2))
+```
+
+Bounds  (given that for fixed apparent prevalence, true prevalence increases in Sp, decreases in Sn):
+
+```{r}
+### sp=1, sn=sn.lwr gives upper bound for both prevalences
+r.upr.2 <- (r.app.2 + 1 - 1)/(sn.lwr+1-1)
+
+### sp=sp.lwr, sn=1 gives lower bounds for both prevalences
+r.lwr.2 <- (r.app.2 + sp.lwr - 1)/(1+sp.lwr-1)
+
+rbind(r.lwr.2, r.upr.2)
+
+### ergo bounds on the log OR
+
+bnd.2 <- c(
+  logit(r.lwr.2[2])-logit(r.upr.2[1]),
+  logit(r.upr.2[2])-logit(r.lwr.2[1]))
+
+rbind(bnd.2, exp(bnd.2))
+```
+
+Proportion of Study 2 ID interval crossing null:
+
+```{r}
+-bnd.2[1]/(bnd.2[2]-bnd.2[1])
+```
+
+Study 1 is imperfect via selection bias in the case population only.   Amongst those diseased, can rule out that exposure status influences participation probability, in one direction or other.  This bias parameter is coded as a log risk ratio, e.g, $\gamma= \log Pr(S=1|X=1,Y=1)/\log Pr(S=1|X=0,Y=1)$. 
+
+For pedagogical purposes, we reverse-engineer both the true value and prior bounds on $\gamma$ such that Study 1 and Study 2 yield the same identification interval.  This is fixing three things to match two values.   We fix the lower bound arbitrarily, then compute the true value and upper bound to make the intervals match.   
+
+```{r}
+gamma.lwr <- log(.7)
+gamma.upr <- gamma.lwr + (bnd.2[2]-bnd.2[1])
+gamma.tr <- bnd.2[1] - trg.tr + gamma.upr
+
+c(gamma.lwr, gamma.tr, gamma.upr)
+```
+
+
+So as then sample size increases, Study 1 reports an apparent estimate, and a bound of: 
+
+```{r}
+trg.app.1 <- trg.tr +  gamma.tr
+bnd.1 <- trg.app.1 - c(gamma.upr, gamma.lwr)
+c(trg.app.1,bnd.1)   ## log OR scale
+exp(c(trg.app.1,bnd.1)) 
+```
+
+Now we turn to Bayesian analysis with uniform priors between the prior bounds, 
+for either $\gamma$ (in Study 1) or $Sn_0,Sn_1,Sp_0,Sp_1$ (in Study 2).
+In both cases $r_0$ and $r_1$ have $\mbox{Unif}(0,1)$ priors.
+
+For Study 1 we reparameterize from $(r_0,r_1,\gamma)$ to $(r_0, \tilde{r}_1,\gamma)$, where
+$\tilde{r_1}=Pr(X=1|S=1,Y=1)=\mbox{expit}(\mbox{logit}(r_1) + \gamma)$.  By change-of-variables we get to the prior 
+%
+\begin{eqnarray*}
+\pi(r_0,\tilde{r}_1,\gamma) & \propto &
+I_A(\gamma) 
+I_{(0,1)}(r_0)
+I_{(0,1)}(\tilde{r}_1) 
+g(\mbox{logit}\tilde{r}_1 - \gamma)/g(\mbox{logit}\tilde{r}_1)
+\end{eqnarray*}
+where $g()$ is the standard logistic density.
+
+This gives the limiting posterior distribution on 
+$\psi = \mbox{logit}\tilde{r}_1 - \gamma - \mbox{logit}\tilde{r}_0$ as 
+the logistic distribution with location $-\mbox{logit}(r^\dagger_0)$, truncated to the identification region.
+
+For Study 2, we can do probabilistic bias analysis, but then, out of abundance of caution, use importance sampling to nudge (if needed) this to be the fully Bayesian posterior distribution:
+
+The following function can be applied for either finite or infinite sample size.
+
+```{r}
+posterior.2 <- function(y=NA, xstr=NA, r.app.tr=NA, sn.lwr, sp.lwr, m=40000) {
+
+  ## supply r.app.tr for large-sample limit, or
+  ## supply y,xstr for actual dataset
+
+  ### prior draws from sn, sp
+  sn.drw <- t(replicate(m,runif(2, sn.lwr, rep(1,2))))
+  sp.drw <- t(replicate(m,runif(2, sp.lwr, rep(1,2))))
+  
+  ### posterior draws, or limiting vals, of r.app
+  if (is.na(r.app.tr[1])) {
+    r.app.drw <- cbind(
+      rbeta(m, 1 + sum((y==0)&(xstr==1)), 1 + sum((y==0)&(xstr==0))),
+      rbeta(m, 1 + sum((y==1)&(xstr==1)), 1 + sum((y==1)&(xstr==0)))
+    ) 
+  } else {
+    r.app.drw <-t(matrix(r.app.tr,2,m))   
+  }
+  
+  ### induces sample on actual prevalences
+  r.drw <- cbind(
+    (r.app.drw[,1] + sp.drw[,1] - 1)/(sn.drw[,1]+sp.drw[,1]-1),
+    (r.app.drw[,2] + sp.drw[,2] - 1)/(sn.drw[,2]+sp.drw[,2]-1)
+  )
+
+  ### remove any out-of-bounds draws
+  ndx <- (apply(r.drw,1,min)>0) & (apply(r.drw,1,max)<1)
+  m.new <- sum(ndx)
+  r.drw <- r.drw[ndx,]; sn.drw <- sn.drw[ndx,]; sp.drw <- sp.drw[ndx,]
+
+  ### resample with importance weights to make fully Bayes
+  ### weights based on Jacobian of mapping between r and r.app
+  wht <- 1/((sn.drw[,1]+sp.drw[,1]-1)*(sn.drw[,2]+sp.drw[,2]-1))
+  wht <- wht/sum(wht)
+  ndx <- sample(1:m.new, prob=wht, replace=T)
+  
+  trg.drw <- logit(r.drw[ndx,2])-logit(r.drw[ndx,1])
+
+  ### return posterior sample of target, two indicators of numerical precision  
+  list(trg.drw=trg.drw, frac.oob=1-m.new/m, ess=1/sum(wht^2))  
+}
+```
+
+
+So the limiting posterior distributions for $\psi$ look as follows:
+
+```{r}
+if (MYPLOT) {
+  pdf.PG("Fig1.pdf",1,1)
+}
+
+### the B answer via Monte Carlo
+pst <- posterior.2(r.app.tr=r.app.2, sn.lwr=sn.lwr, sp.lwr=sp.lwr)
+tmp <- density(pst$trg.drw, from=bnd.2[1], to=bnd.2[2], adjust=1.5,n=512)
+plot(tmp$x, tmp$y, type="l",lwd=1.3,lty=6, xlim=c(-0.5,1),
+     xlab="Log Odds Ratio", ylab="Density")
+
+### and superimpose (the closed-form) A answer
+gr <- seq(from=bnd.1[1],to=bnd.1[2],length=500)
+loc <- -logit(r.tr[1])
+points(
+  c(bnd.1[1],gr,bnd.1[2]),
+  c(0,dlogis(gr,loc)/(plogis(bnd.1[2],loc)-plogis(bnd.1[1],loc)),0),
+  lwd=1.3,type="l"
+)
+
+legend(-0.5, 2.2, legend=c("A","B"),lty=c(1,6))
+
+if (MYPLOT) {
+  graphics.off()
+}  
+```
+
+Quick due diligence on numerical computation for the B case:
+
+```{r}
+c(pst$frac.oob, pst$ess)
+```
+
+How much limiting posterior probability to left of null for both studies:
+
+```{r}
+c((plogis(0,loc) - plogis(bnd.1[1],loc))/
+  (plogis(bnd.1[2],loc) - plogis(bnd.1[1],loc)),
+  mean(pst$trg.drw<0))
+```
+
+What are the 95% equal-tailed credible intervals, and what proportion of the ID interval do they occupy?
+
+```{r}
+cred.1.95 <- c( 
+qlogis(plogis(bnd.1[1],loc)+0.025*(plogis(bnd.1[2],loc)-plogis(bnd.1[1],loc)),loc),  
+qlogis(plogis(bnd.1[1],loc)+0.975*(plogis(bnd.1[2],loc)-plogis(bnd.1[1],loc)),loc)
+)
+
+cred.2.95 <- quantile(pst$trg.drw, c(0.025, 0.975))
+
+cred.1.95
+exp(cred.1.95)
+sum(c(-1,1)*cred.1.95)/sum(c(-1,1)*bnd.1)
+
+cred.2.95
+exp(cred.2.95)
+sum(c(-1,1)*cred.2.95)/sum(c(-1,1)*bnd.2)
+```
+
+Now on to repeated sampling with finite sample size
+
+The function above will handle Lab 2, but need a function for Team 1:
+
+```{r}
+posterior.1 <- function(y, x, gamma.lwr, gamma.upr, m=40000) {
+
+  r0.drw <- rbeta(m, 1+sum((y==0)&(x==1)), 1 + sum((y==0)&(x==0)))
+  r1.tld.drw <- rbeta(m, 1+sum((y==1)&(x==1)), 1 + sum((y==1)&(x==0)))
+  gamma.drw <- runif(m, gamma.lwr, gamma.upr)
+  
+  ### importance weights
+  wht <- dlogis(logit(r1.tld.drw)-gamma.drw)/dlogis(logit(r1.tld.drw))
+  wht <- wht/sum(wht)
+  ndx <- sample(1:m, prob=wht, replace=T)
+
+  trg.drw <- logit(r1.tld.drw[ndx]) - logit(r0.drw[ndx]) - gamma.drw[ndx]
+  
+  ### return posterior sample, indicator of numeric precision
+  list(trg.drw=trg.drw, ess=1/sum(wht^2))
+}
+```
+
+Now can draw the samples, compute and store the posteriors
+
+```{r}
+NREP <- 5  ### number of repeated samples
+n <- 2000  ### size of each sample
+ans.1 <- ans.2 <- vector(mode="list", length=NREP)
+
+### not really necessary, but will make the sample participants
+### match (A versus B) as much as possible
+### can't be a perfect match due to selection bias
+
+for (i in 1:NREP) {
+  y.1 <- y.2 <- c(rep(0,n/2),rep(1,n/2))    ### balanced case-control studies
+  
+  ### study B, actual and measured exposure
+  x.2 <- rbinom(n, size=1, prob=(1-y.2)*r.tr[1]+y.2*r.tr[2])
+  xstr.2 <- rbinom(n,size=1,
+                   prob=(1-x.2)*((1-y.2)*(1-sp.tr[1]) + y.2*(1-sp.tr[2])) +
+                            x.2*((1-y.2)*sn.tr[1] + y.2*sn.tr[2]))
+  
+  ### for study A, can have the same controls
+  x.1 <- rep(NA, n)
+  x.1[y.1==0] <- x.2[y.1==0]
+  
+  ### but for cases, will resample as per the selection bias
+  x.1[y.1==1] <- sample(x.2[y.1==1], prob=exp(x.2[y.1==1]*gamma.tr), replace=T)
+
+  ans.1[[i]] <- posterior.1(y.1, x.1, gamma.lwr, gamma.upr)
+  ans.2[[i]] <- posterior.2(y=y.2, xstr=xstr.2, sn.lwr=sn.lwr, sp.lwr=sp.lwr)
+}
+```
+
+
+Plot all the posteriors:
+
+
+```{r}  
+if (MYPLOT) {
+  pdf.PG("fig2.pdf",1,1)
+}
+
+for (i in 1:NREP) {
+  tmp <- density(ans.2[[i]]$trg.drw, adjust=1.7, n=512)
+  if (i==1) {
+    plot(tmp$x, tmp$y, type="l",xlim=c(-1,1.5),ylim=c(0,2),
+         xlab="Log Odds Ratio", ylab="Density",lwd=1.3, lty=6)
+  } else {
+    points(tmp$x, tmp$y, type="l", lwd=1.3, lty=6)
+  }
+  tmp <- density(ans.1[[i]]$trg.drw, adjust=1.7,n=512)
+  points(tmp$x, tmp$y, type="l", lwd=1.3)
+}
+points(bnd.1, rep(0,2), pch=17)
+
+legend(-1, 2, legend=c("A","B"),lty=c(1,6))
+
+if (MYPLOT) {
+  graphics.off()
+}  
+```
+
+Then how much posterior weight to the left of the null
+
+```{r}
+for (i in 1:NREP) {
+  print(c(mean(ans.1[[i]]$trg.drw<0), mean(ans.2[[i]]$trg.drw<0)))
+}
+```
+
+And widths of 95% equal-tailed credible intervals
+
+```{r}
+for (i in 1:NREP) {
+  print(c(sum(c(-1,1)*quantile(ans.1[[i]]$trg.drw,c(0.025,.975))),
+          sum(c(-1,1)*quantile(ans.2[[i]]$trg.drw,c(0.025,.975)))))
+}
+```
+
+  
+
+
+
+
+
