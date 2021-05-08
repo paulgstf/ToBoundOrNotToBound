@@ -188,7 +188,7 @@ points(
   lwd=1.3,type="l"
 )
 
-legend(-0.5, 2.2, legend=c("A","B"),lty=c(1,6))
+legend(-0.5, 2.2, legend=c("Study 1","Study 2"),lty=c(1,6))
 
 if (MYPLOT) {
   graphics.off()
@@ -305,7 +305,7 @@ for (i in 1:NREP) {
 }
 points(bnd.1, rep(0,2), pch=17)
 
-legend(-1, 2, legend=c("A","B"),lty=c(1,6))
+legend(-1.05, 2, legend=c("Study 1","Study 2"),lty=c(1,6))
 
 if (MYPLOT) {
   graphics.off()
